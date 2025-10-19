@@ -7,7 +7,7 @@ import sys
 import time
 
 # === CONFIG ===
-PORT = '/dev/tty.usbmodem14701'   # change to your Arduino port
+PORT = '/dev/tty.usbmodem14601'   # change to your Arduino port
 BAUD = 115200
 
 # === SERIAL ===
@@ -45,7 +45,7 @@ ax1.set_title("AS7341 Spectrometer")
 ax1.set_ylabel("Intensity")
 ax1.set_xticks(x7341)
 ax1.set_xticklabels(as7341_labels, rotation=45)
-ax1.set_ylim(0, 5000)
+ax1.set_ylim(0, 27500)
 
 ax2.set_title("AS7263 Spectrometer")
 ax2.set_ylabel("Intensity")
