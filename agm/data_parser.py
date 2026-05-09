@@ -1,7 +1,7 @@
 """
 DataParser Module - AgM
 Extracts and validates numeric data from sensor blocks delimited by $ markers.
-Handles calibration (/*...*/) and measurement (@...@/) protocols.
+Handles sample measurement (/*...*/) protocol.
 """
 
 import re
@@ -14,13 +14,11 @@ class DataParser:
     
     def detect_mode(self, line: str) -> Optional[str]:
         """
-        Detect if line contains start of calibration or measurement.
-        Returns: 'calibration', 'measurement', or None
+        Detect if line contains start of sample measurement.
+        Returns: 'calibration' (for compatibility, but it's now sample measurement), or None
         """
         if '/*' in line:
             return 'calibration'
-        elif '@' in line and '@/' not in line:
-            return 'measurement'
         return None
     
     def extract_reading_block(self, line: str) -> Optional[List[str]]:
@@ -64,13 +62,11 @@ class DataParser:
                 continue
         return result
     
-    def is_end_marker(self, line: str, mode: str) -> bool:
+    def is_end_marker(self, line: str, mode: str = 'calibration') -> bool:
         """
-        Check if line contains end marker for current mode.
-        mode: 'calibration' or 'measurement'
+        Check if line contains end marker for sample measurement.
+        mode: unused but kept for compatibility
         """
-        if mode == 'calibration' and '*/' in line:
-            return True
-        elif mode == 'measurement' and '@/' in line:
+        if '*/' in line:
             return True
         return False

@@ -1,9 +1,11 @@
 """
 PlotManager Module - AgM
-Handles real-time spectrum plotting and visualization.
+Handles spectrum plotting and figure generation. Does NOT display plots.
 """
 
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
 import numpy as np
 from typing import List, Optional
 
@@ -59,15 +61,14 @@ class PlotManager:
             bar.set_height(height)
     
     def plot_spectrum(self, values: List[float], title: str = "AS7265x Spectrometer") -> None:
-        """Create and display a spectrum plot."""
+        """Create a spectrum plot."""
         self.create_figure(title)
         self.update_y_axis(values)
         self.update_bars(values)
     
     def show(self) -> None:
-        """Display the plot."""
-        if self.fig:
-            plt.show()
+        """Plot display is disabled - plots are saved to file only."""
+        print("[INFO] Plot display disabled - plot will be saved to file")
     
     def save_figure(self, filepath: str) -> bool:
         """Save the current figure to file."""

@@ -1,6 +1,7 @@
 """
 AgM Main Controller
-Orchestrates the modular system with state machine (IDLE → CALIBRATION/MEASUREMENT → IDLE)
+Orchestrates the modular system with state machine for Sample Measurement
+(IDLE → SAMPLE_MEASUREMENT → IDLE)
 """
 
 import sys
@@ -19,8 +20,7 @@ from agm.plot_manager import PlotManager
 class State(Enum):
     """State machine states."""
     IDLE = "idle"
-    CALIBRATION = "calibration"
-    MEASUREMENT = "measurement"
+    SAMPLE_MEASUREMENT = "sample_measurement"
 
 class AgMController:
     def __init__(self, port: str = '/dev/tty.usbmodem14701', baud: int = 115200):
@@ -38,7 +38,7 @@ class AgMController:
         
         # State machine
         self.state = State.IDLE
-        self.measurement_type = None  # 'calibration' or 'measurement'
+        self.sample_name = None
         
         # Statistics
         self.blocks_received = 0
@@ -49,8 +49,18 @@ class AgMController:
         if not self.serial.open():
             sys.exit(1)
         
-        print("[INFO] AgM Controller started - Waiting for commands")
-        print("[INFO] Send /* for calibration, @ for measurement")
+        print("[INFO] AgM Controller started")
+        print()
+        
+        # Ask for sample name before starting
+        self.sample_name = self._prompt_sample_name()
+        if not self.sample_name:
+            print("[ERROR] Sample name required to start. Exiting.")
+            self._cleanup()
+            sys.exit(1)
+        
+        print()
+        print("[INFO] Send /* to start a sample measurement")
         
         try:
             while True:
@@ -58,26 +68,37 @@ class AgMController:
                 if not line:
                     continue
                 
-                # Check for mode markers
+                # Check for sample measurement marker
                 mode = self.parser.detect_mode(line)
-                if mode:
-                    self._start_measurement_cycle(mode, line)
+                if mode and self.state == State.IDLE:
+                    self._start_measurement_cycle(line)
         
         except KeyboardInterrupt:
             print("\n[INFO] Interrupted by user")
         finally:
             self._cleanup()
     
-    def _start_measurement_cycle(self, mode: str, start_line: str) -> None:
-        """Start a new measurement cycle (calibration or measurement)."""
-        if mode == 'calibration':
-            print("\n[INFO] === CALIBRATION MODE ===")
-            self.measurement_type = 'calibration'
-        else:
-            print("\n[INFO] === MEASUREMENT MODE ===")
-            self.measurement_type = 'measurement'
+    def _start_measurement_cycle(self, start_line: str) -> None:
+        """Start measurement cycle after sample name has been set."""
+        print("\n[INFO] === SAMPLE MEASUREMENT MODE ===")
+        print(f"[INFO] Sample: {self.sample_name}")
+        print()
         
+        self.state = State.SAMPLE_MEASUREMENT
         self._run_measurement_cycle(start_line)
+    
+    def _prompt_sample_name(self) -> Optional[str]:
+        """Prompt user for sample name."""
+        try:
+            sample_name = input("\nEnter sample name: ").strip()
+            if sample_name:
+                return sample_name
+            else:
+                print("[ERROR] Sample name cannot be empty")
+                return None
+        except Exception as e:
+            print(f"[ERROR] Failed to read sample name: {e}")
+            return None
     
     def _run_measurement_cycle(self, start_line: str) -> None:
         """Execute 5-read measurement cycle."""
@@ -98,7 +119,7 @@ class AgMController:
                 continue
             
             # Check for end marker
-            if self.parser.is_end_marker(line, self.measurement_type):
+            if self.parser.is_end_marker(line):
                 print(f"[INFO] End marker received. Total reads: {read_count}")
                 break
             
@@ -117,6 +138,7 @@ class AgMController:
             print("[ERROR] No valid readings captured")
         
         self.state = State.IDLE
+        print("[INFO] Returning to IDLE - ready for next measurement")
     
     def _process_reading(self, values: List[str]) -> None:
         """Parse and validate a single reading."""
@@ -133,79 +155,30 @@ class AgMController:
             print(f"[ERROR] Failed to process reading: {e}")
     
     def _finalize_measurement(self, avg_values: List[float]) -> None:
-        """Save and plot the averaged measurement."""
+        """Save and store the averaged measurement."""
         if not avg_values:
             print("[ERROR] No valid measurements")
             return
         
-        if self.measurement_type == 'calibration':
-            self._handle_calibration(avg_values)
-        else:
-            self._handle_measurement(avg_values)
-    
-    def _handle_calibration(self, avg_values: List[float]) -> None:
-        """Process and save calibration reference."""
-        print("\n[INFO] Processing calibration data...")
+        print("\n[INFO] Processing sample measurement data...")
         
-        # Save calibration
-        calib_path = self.calib_manager.save_calibration(avg_values)
+        # Save measurement data
+        calib_path = self.calib_manager.save_calibration(self.sample_name, avg_values)
         
-        # Store in measurement object
-        self.measurement.set_white_reference(avg_values)
-        
-        # Plot calibration
-        self.plot_manager.plot_spectrum(avg_values, "AS7265x Calibration Reference")
-        self.plot_manager.show()
-        self.plot_manager.close()
-        
-        print("[INFO] Calibration complete")
-    
-    def _handle_measurement(self, avg_values: List[float]) -> None:
-        """Process, normalize, and save measurement."""
-        print("\n[INFO] Processing measurement data...")
-        
-        # Load calibration
-        calib_data = self.calib_manager.load_latest_calibration()
-        if not calib_data:
-            print("[ERROR] No calibration found - please run calibration first")
-            return
-        
-        self.measurement.set_white_reference(calib_data)
-        
-        # Normalize
-        normalized = self.measurement.normalize(avg_values)
-        
-        # Format and save measurement
-        channel_labels = [
-            "410nm", "435nm", "460nm", "485nm", "510nm", "535nm",
-            "560nm", "585nm", "610nm", "645nm", "680nm", "705nm",
-            "730nm", "760nm", "810nm", "860nm", "900nm", "940nm"
-        ]
-        
-        lines = ["SOIL MEASUREMENT DATA", "=" * 50, ""]
-        for label, raw, norm in zip(channel_labels, avg_values, normalized):
-            lines.append(f"{label}: Raw={raw:.2f}, Normalized={norm:.2f}%")
-        
-        lines.append("")
-        lines.append("=" * 50)
-        lines.append(f"Max raw intensity: {max(avg_values):.2f}")
-        lines.append("Normalization applied using latest calibration")
-        
-        data = "\n".join(lines)
-        self.file_manager.write_txt("AgM_Measurements", data)
-        
-        # Plot
-        self.plot_manager.plot_spectrum(normalized, "AS7265x Measurement (Normalized)")
-        self.plot_manager.update_y_axis(normalized)
+        # Generate and save plot
+        self.plot_manager.plot_spectrum(avg_values, f"AS7265x Sample: {self.sample_name}")
+        self.plot_manager.update_y_axis(avg_values)
         
         # Save plot as PNG
-        plot_path = self.file_manager.base_path / f"{self.file_manager.get_filename_timestamp('AgM_PlotMeasurements')}.png"
-        self.plot_manager.save_figure(str(plot_path))
+        plot_filepath = self.file_manager.base_path / f"AgM_{self.sample_name}_Plot_{self.file_manager.get_timestamp_formatted()}.png"
+        self.plot_manager.save_figure(str(plot_filepath))
         
-        self.plot_manager.show()
+        # Close plot without displaying
         self.plot_manager.close()
         
-        print("[INFO] Measurement complete")
+        print("[INFO] Sample measurement complete - files saved")
+        print(f"  - Text file: {calib_path}")
+        print(f"  - Plot file: {plot_filepath}")
     
     def _cleanup(self) -> None:
         """Cleanup before exit."""
