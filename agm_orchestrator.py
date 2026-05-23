@@ -212,14 +212,26 @@ class AgMOrchestrator:
             time.sleep(0.5)
 
     def _sensing_process(self) -> None:
-        """Send M to Arduino, collect R[18], run KNN, save results."""
+        """Confirm with user then send M to Arduino and run full inference."""
         _header("Sensing Process")
 
         sample_name = _auto_sample_name()
         print(f"  Sample ID: {sample_name}")
         print()
-        print("  Sending measurement command to Arduino...")
+        print("  Press M to start measurement or 0 to return to menu.")
+        print()
+        choice = input("  [user input]: ").strip().upper()
 
+        if choice == "0":
+            return
+
+        if choice != "M":
+            print("  [WARN] Invalid input.")
+            time.sleep(1)
+            return
+
+        print()
+        print("  Sending measurement command to Arduino...")
         self.run_inference(sample_name)
 
     # ── Option 3: Settings ────────────────────────────────────────────
@@ -249,18 +261,24 @@ class AgMOrchestrator:
         # Send trigger cmd M
         try:
             self.serial.ser.write(b'M')
+            self.serial.ser.flush()
         except Exception as e:
             print(f"  [ERROR] Failed to send cmd M: {e}")
             self.state = State.IDLE
             return
 
-        # Collect response
+        # Collect response — handle ACK, WARN, ERR, data frame
         r_values      = None
         timeout_reads = 80
+        lamp_cold_warned = False
 
         for _ in range(timeout_reads):
             line = self.serial.readline()
             if not line:
+                continue
+
+            # Ignore serial echo of the M byte
+            if line.strip() == "M":
                 continue
 
             if line.startswith("ACK"):
@@ -273,7 +291,17 @@ class AgMOrchestrator:
                 return
 
             if self.parser.detect_warning(line):
-                print(f"  [WARN] Arduino: {line} — lamp may be cold, continuing.")
+                if not lamp_cold_warned:
+                    lamp_cold_warned = True
+                    print(f"  [WARN] Arduino: {line} — lamp may be cold.")
+                    print()
+                    print("  Continue? Press M to proceed or 0 to return to menu.")
+                    print()
+                    user = input("  [user input]: ").strip().upper()
+                    if user == "0":
+                        self.state = State.IDLE
+                        return
+                    # M or anything else — continue waiting for data frame
                 continue
 
             r_values = self.parser.parse_inference_frame(line)
