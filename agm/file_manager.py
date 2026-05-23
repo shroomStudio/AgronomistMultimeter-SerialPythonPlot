@@ -108,3 +108,61 @@ class FileManager:
         except Exception as e:
             print(f"[ERROR] Failed to load reference data: {e}")
             return None
+
+    # ── Inference Feature (PY-07 / PY-08) ────────────────────────────
+
+    def save_inference_result(self, result_dict: dict) -> Optional[str]:
+        """
+        Write inference result to AgM_Inference_{TIMESTAMP}.txt.
+        result_dict keys: sample, N, P, K, N_mg_kg, P_mg_kg, K_mg_kg,
+                          distance, confidence, r_values (List[float])
+        Ref: AgM_SRS_Inference_V0.4.1 §3.5
+        """
+        from datetime import datetime
+        channel_labels = [
+            "410nm", "435nm", "460nm", "485nm", "510nm", "535nm",
+            "560nm", "585nm", "610nm", "645nm", "680nm", "705nm",
+            "730nm", "760nm", "810nm", "860nm", "900nm", "940nm"
+        ]
+        try:
+            timestamp  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            r_values   = result_dict.get("r_values", [])
+            sample     = result_dict.get("sample", "UNKNOWN")
+            distance   = result_dict.get("distance", 0.0)
+            confidence = result_dict.get("confidence", "N/A")
+            n_level    = result_dict.get("N", "N/A")
+            p_level    = result_dict.get("P", "N/A")
+            k_level    = result_dict.get("K", "N/A")
+            n_mg       = result_dict.get("N_mg_kg", 0.0)
+            p_mg       = result_dict.get("P_mg_kg", 0.0)
+            k_mg       = result_dict.get("K_mg_kg", 0.0)
+
+            lines = [
+                "INFERENCE RESULT",
+                "=" * 48,
+                f"Timestamp:        {timestamp}",
+                f"Matched sample:   {sample}",
+                f"Distance:         {distance:.4f}",
+                f"Confidence:       {confidence}",
+                "-" * 48,
+                f"N (Nitrogen):     {n_level:<8} ({n_mg:.2f} mg/kg FIRA ref)",
+                f"P (Phosphorus):   {p_level:<8} ({p_mg:.2f} mg/kg FIRA ref)",
+                f"K (Potassium):    {k_level:<8} ({k_mg:.2f} mg/kg FIRA ref)",
+                "-" * 48,
+                "R[18] normalized reflectance (%):",
+            ]
+            for i, label in enumerate(channel_labels):
+                val = r_values[i] if i < len(r_values) else 0.0
+                lines.append(f"  {label}:  {val:.4f}")
+            lines.append("=" * 48)
+
+            ts_file  = self.get_timestamp_formatted()
+            filename = f"AgM_Inference_{ts_file}.txt"
+            filepath = self.base_path / filename
+            with open(filepath, 'w') as f:
+                f.write("\n".join(lines))
+            print(f"[INFO] Inference result saved: {filepath}")
+            return str(filepath)
+        except Exception as e:
+            print(f"[ERROR] Failed to save inference result: {e}")
+            return None

@@ -85,3 +85,33 @@ class PlotManager:
         """Close the figure."""
         if self.fig:
             plt.close(self.fig)
+
+    # ── Inference Feature (PY-09) ─────────────────────────────────────
+
+    def plot_inference(self, r_new: list, centroid: list, sample_id: str) -> None:
+        """
+        Overlay measured spectrum (r_new) and matched centroid on the same axes.
+        Non-blocking — saves to file only (Agg backend).
+        Ref: AgM_SRS_Inference_V0.4.1 §3.3 PY-09
+        """
+        fig, ax = plt.subplots(1, 1, figsize=(14, 6))
+        fig.suptitle(f"AgM Inference — Matched: {sample_id}", fontsize=14, fontweight='bold')
+
+        x = np.arange(len(self.channel_labels))
+        width = 0.4
+
+        ax.bar(x - width/2, r_new,   width, label="Measured R[18]",
+               color=self.colors, edgecolor='black', linewidth=0.5, alpha=0.85)
+        ax.bar(x + width/2, centroid, width, label=f"Centroid {sample_id}",
+               color=self.colors, edgecolor='grey',  linewidth=0.5, alpha=0.45)
+
+        ax.set_ylabel("Reflectance (%)", fontsize=11, fontweight='bold')
+        ax.set_xlabel("Wavelength / Channel", fontsize=11, fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(self.channel_labels, rotation=45, ha='right', fontsize=9)
+        ax.legend(fontsize=10)
+        ax.grid(axis='y', alpha=0.3, linestyle='--')
+        plt.tight_layout()
+
+        self.fig = fig
+        self.ax  = ax

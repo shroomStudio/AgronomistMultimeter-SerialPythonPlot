@@ -16,11 +16,13 @@ from agm.measurement import Measurement
 from agm.file_manager import FileManager
 from agm.calibration_manager import CalibrationManager
 from agm.plot_manager import PlotManager
+from agm.knn_inference import knn_predict, confidence_label, load_centroids
 
 class State(Enum):
     """State machine states."""
-    IDLE = "idle"
+    IDLE               = "idle"
     SAMPLE_MEASUREMENT = "sample_measurement"
+    INFERENCE          = "inference"   # PY-02: triggered by run_inference()
 
 class AgMController:
     def __init__(self, port: str = '/dev/tty.usbmodem14701', baud: int = 115200):
@@ -193,3 +195,98 @@ class AgMController:
 if __name__ == "__main__":
     controller = AgMController()
     controller.run()
+
+    # ── Inference Feature (PY-02 to PY-09) ───────────────────────────
+
+    def run_inference(self) -> None:
+        """
+        Execute full KNN inference workflow.
+        Workflow per AgM_SRS_Inference_V0.4.1 §3.4:
+          1. Send 'M' -> receive ACK,M
+          2. Wait for $...$ frame, handle ERR/WARN
+          3. Parse R[18] -> knn_predict() -> confidence_label()
+          4. Display result, save to file, optional plot
+        """
+        print("\n[INFERENCE] Starting inference process...")
+        self.state = State.INFERENCE
+
+        # Step 1: send trigger command (PY-02)
+        try:
+            self.serial.ser.write(b'M')
+        except Exception as e:
+            print(f"[ERROR] Failed to send cmd M: {e}")
+            self.state = State.IDLE
+            return
+
+        # Step 2: wait for ACK, ERR, WARN or data frame
+        r_values = None
+        timeout_reads = 50  # ~50 s max at 1 s timeout per readline
+
+        for _ in range(timeout_reads):
+            line = self.serial.readline()
+            if not line:
+                continue
+
+            if line.startswith("ACK"):
+                print(f"[INFERENCE] {line}")
+                continue
+
+            # PY-04: ERR frame — abort
+            if self.parser.detect_error(line):
+                print(f"[ERROR] Arduino: {line} — calibration missing, aborting.")
+                self.state = State.IDLE
+                return
+
+            # PY-05: WARN frame — log and continue (non-blocking)
+            if self.parser.detect_warning(line):
+                print(f"[WARN] Arduino: {line} — lamp may be cold, continuing.")
+                continue
+
+            # Step 3: data frame (PY-03)
+            r_values = self.parser.parse_inference_frame(line)
+            if r_values:
+                print(f"[INFERENCE] R[18] frame received ({len(r_values)} channels)")
+                break
+
+        if not r_values:
+            print("[ERROR] No valid inference frame received.")
+            self.state = State.IDLE
+            return
+
+        # Step 4: KNN prediction (PY-06)
+        prediction  = knn_predict(r_values)
+        confidence  = confidence_label(prediction["distance"])
+        prediction["confidence"] = confidence
+        prediction["r_values"]   = r_values
+
+        print("\n" + "=" * 48)
+        print("INFERENCE RESULT")
+        print("=" * 48)
+        print(f"  Matched sample : {prediction['sample']}")
+        print(f"  Distance       : {prediction['distance']:.4f}")
+        print(f"  Confidence     : {confidence}")
+        print(f"  N (Nitrogen)   : {prediction['N']}  ({prediction['N_mg_kg']:.2f} mg/kg)")
+        print(f"  P (Phosphorus) : {prediction['P']}  ({prediction['P_mg_kg']:.2f} mg/kg)")
+        print(f"  K (Potassium)  : {prediction['K']}  ({prediction['K_mg_kg']:.2f} mg/kg)")
+        print("=" * 48)
+
+        # Step 5: save result file (PY-07 / PY-08)
+        result_path = self.file_manager.save_inference_result(prediction)
+        if result_path:
+            print(f"[INFERENCE] Result saved: {result_path}")
+
+        # Step 6: optional plot overlay (PY-09)
+        centroids = load_centroids()
+        centroid  = centroids.get(prediction["sample"], [])
+        if centroid:
+            self.plot_manager.plot_inference(r_values, centroid, prediction["sample"])
+            plot_path = str(
+                self.file_manager.base_path /
+                f"AgM_Inference_{prediction['sample']}_{self.file_manager.get_timestamp_formatted()}.png"
+            )
+            self.plot_manager.save_figure(plot_path)
+            self.plot_manager.close()
+            print(f"[INFERENCE] Plot saved: {plot_path}")
+
+        self.state = State.IDLE
+        print("[INFERENCE] Complete — returning to IDLE")

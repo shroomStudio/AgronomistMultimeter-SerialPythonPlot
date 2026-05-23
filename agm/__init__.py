@@ -9,6 +9,7 @@ from .measurement import Measurement
 from .file_manager import FileManager
 from .calibration_manager import CalibrationManager
 from .plot_manager import PlotManager
+from .knn_inference import knn_predict, confidence_label, load_centroids, load_fira_labels
 
 __version__ = "1.0.0"
 __all__ = [
@@ -17,5 +18,9 @@ __all__ = [
     'Measurement',
     'FileManager',
     'CalibrationManager',
-    'PlotManager'
+    'PlotManager',
+    'knn_predict',
+    'confidence_label',
+    'load_centroids',
+    'load_fira_labels',
 ]

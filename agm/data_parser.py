@@ -70,3 +70,33 @@ class DataParser:
         if '*/' in line:
             return True
         return False
+
+    # ── Inference Feature (PY-03 / PY-04 / PY-05) ────────────────────
+
+    def parse_inference_frame(self, raw: str) -> Optional[List[float]]:
+        """
+        Extract and return R[18] float list from a $,v1,...,v18,$ frame.
+        Returns list of 18 floats or None if frame is invalid.
+        Ref: AgM_SRS_Inference_V0.4.1 §3.3 PY-03
+        """
+        values = self.extract_reading_block(raw)
+        if values is None:
+            return None
+        validated = self.validate(values)
+        if len(validated) != 18:
+            return None
+        return validated
+
+    def detect_error(self, line: str) -> bool:
+        """
+        Return True if line is an ERR,CALIB_MISSING frame.
+        Ref: AgM_SRS_Inference_V0.4.1 §3.3 PY-04
+        """
+        return line.strip().startswith("ERR,")
+
+    def detect_warning(self, line: str) -> bool:
+        """
+        Return True if line is a WARN,LAMP_COLD frame.
+        Ref: AgM_SRS_Inference_V0.4.1 §3.3 PY-05
+        """
+        return line.strip().startswith("WARN,")
