@@ -255,6 +255,12 @@ class AgMOrchestrator:
         """
         Full KNN inference workflow.
         Ref: AgM_SRS_Inference_V0.5 §3.4
+
+        Flow:
+          1. Send cmd M → Arduino responds: ACK,M + [WARN,LAMP_COLD] + $,...,$
+          2. Read all serial lines until $...$ frame is found or timeout
+          3. On WARN: drain remaining buffer first, then show warning + user prompt
+          4. KNN predict → display → save → plot
         """
         self.state = State.INFERENCE
 
@@ -267,19 +273,32 @@ class AgMOrchestrator:
             self.state = State.IDLE
             return
 
-        # Collect response — handle ACK, WARN, ERR, data frame
-        r_values      = None
-        timeout_reads = 80
-        lamp_cold_warned = False
+        # ── Phase 1: collect ALL lines Arduino sends (ACK + WARN + $frame$) ──
+        # Arduino sends everything in one burst — read with generous timeout
+        raw_lines = []
+        empties   = 0
+        max_empties = 12  # ~12 s total wait at 1 s timeout
 
-        for _ in range(timeout_reads):
+        while empties < max_empties:
             line = self.serial.readline()
             if not line:
+                empties += 1
+                # Stop early if we already have a data frame
+                if any(l.startswith("$,") for l in raw_lines):
+                    break
                 continue
+            empties = 0  # reset on any real data
+            raw_lines.append(line)
+            if line.startswith("$,"):
+                break  # data frame received — stop reading
 
-            # Ignore serial echo of the M byte
+        # ── Phase 2: process collected lines ──────────────────────────
+        r_values         = None
+        lamp_cold_warned = False
+
+        for line in raw_lines:
             if line.strip() == "M":
-                continue
+                continue  # ignore serial echo
 
             if line.startswith("ACK"):
                 print(f"  [INFO] {line}")
@@ -290,24 +309,27 @@ class AgMOrchestrator:
                 self.state = State.IDLE
                 return
 
-            if self.parser.detect_warning(line):
-                if not lamp_cold_warned:
-                    lamp_cold_warned = True
-                    print(f"  [WARN] Arduino: {line} — lamp may be cold.")
-                    print()
-                    print("  Continue? Press M to proceed or 0 to return to menu.")
-                    print()
-                    user = input("  [user input]: ").strip().upper()
-                    if user == "0":
-                        self.state = State.IDLE
-                        return
-                    # M or anything else — continue waiting for data frame
+            if self.parser.detect_warning(line) and not lamp_cold_warned:
+                lamp_cold_warned = True
+                print(f"  [WARN] Arduino: {line} — lamp may be cold.")
                 continue
 
-            r_values = self.parser.parse_inference_frame(line)
-            if r_values:
+            parsed = self.parser.parse_inference_frame(line)
+            if parsed:
+                r_values = parsed
                 print(f"  [INFO] R[18] frame received ({len(r_values)} channels)")
-                break
+
+        # ── Phase 3: if WARN was received, show confirmation prompt ───
+        if lamp_cold_warned:
+            print()
+            time.sleep(1)
+            print("  Continue? Press M to proceed or 0 to return to menu.")
+            print()
+            user = input("  [user input]: ").strip().upper()
+            if user == "0":
+                self.state = State.IDLE
+                return
+            # User confirmed — proceed with data already in r_values
 
         if not r_values:
             print("  [ERROR] No valid inference frame received.")
