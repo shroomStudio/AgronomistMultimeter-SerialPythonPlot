@@ -192,7 +192,12 @@ class AgMOrchestrator:
             timer_thread.join(timeout=WARMUP_SECONDS + 2)
         except KeyboardInterrupt:
             stop_event.set()
-            print("\n  [INFO] Warm-up interrupted — returning to menu.")
+            print("\n  [INFO] Warm-up interrupted — turning lamp off.")
+            try:
+                self.serial.ser.write(b'0')
+                self.serial.ser.flush()
+            except Exception:
+                pass
             time.sleep(1)
             return
 
@@ -249,98 +254,121 @@ class AgMOrchestrator:
         Arduino protocol:
           Python sends M  ->  Arduino: ACK,M
           Arduino checks warmup:
-            - Cold lamp: WARN,LAMP_COLD  -> waits for M (proceed) or other (cancel)
-            - Lamp ready: READY,PRESS_M  -> waits for M (proceed) or other (cancel)
+            - Cold: WARN,LAMP_COLD   -> waits for M/other
+            - Warm: READY,PRESS_M    -> waits for M/other
           Python forwards user input to Arduino
-          Arduino: ACK,M_CONFIRMED -> measures -> $,...,$
-                   CANCELLED       -> returns to IDLE
+          Arduino: ACK,M_CONFIRMED -> MEASURING,1/10 ... -> $,...,$
+                   CANCELLED       -> IDLE
 
         Ref: AgM_SRS_Inference_V0.5 §3.4
         """
         self.state = State.INFERENCE
 
-        # Send initial trigger cmd M
+        # Increase serial timeout for long measurement phase (~60s max)
+        original_timeout = self.serial.ser.timeout
+        self.serial.ser.timeout = 30.0
+
+        def _lamp_off():
+            """Send lamp-off command to Arduino on interrupt."""
+            try:
+                self.serial.ser.write(b'0')
+                self.serial.ser.flush()
+            except Exception:
+                pass
+
         try:
+            # Send initial trigger cmd M
             self.serial.ser.write(b'M')
             self.serial.ser.flush()
-        except Exception as e:
-            print(f"  [ERROR] Failed to send cmd M: {e}")
+
+            r_values = None
+
+            while True:
+                line = self.serial.readline()
+                if not line:
+                    continue
+
+                # Filter serial echo
+                if line.strip() in ("M", ""):
+                    continue
+
+                # ── Progress update ───────────────────────────────────
+                if line.startswith("MEASURING,"):
+                    print(f"  [INFO] {line}")
+                    continue
+
+                # ── ACK ───────────────────────────────────────────────
+                if line.startswith("ACK,M_CONFIRMED"):
+                    print(f"  [INFO] {line} — measurement started.")
+                    # Switch to long timeout for the read phase
+                    self.serial.ser.timeout = 30.0
+                    continue
+
+                if line.startswith("ACK"):
+                    print(f"  [INFO] {line}")
+                    continue
+
+                # ── Error ─────────────────────────────────────────────
+                if self.parser.detect_error(line):
+                    print(f"  [ERROR] Arduino: {line}")
+                    _lamp_off()
+                    self.state = State.IDLE
+                    return
+
+                # ── CANCELLED ─────────────────────────────────────────
+                if line.startswith("CANCELLED"):
+                    print()
+                    print("  [INFO] Measurement cancelled — returning to menu.")
+                    self.state = State.IDLE
+                    return
+
+                # ── WARN: lamp cold ───────────────────────────────────
+                if self.parser.detect_warning(line):
+                    print(f"  [WARN] Arduino: {line} — lamp may be cold.")
+                    print()
+                    time.sleep(1)
+                    print("  Press M to continue measurement or 0 to cancel.")
+                    print()
+                    user = input("  [user input]: ").strip().upper()
+                    cmd  = b'M' if user == "M" else b'0'
+                    self.serial.ser.write(cmd)
+                    self.serial.ser.flush()
+                    continue
+
+                # ── READY: lamp warm ──────────────────────────────────
+                if line.startswith("READY,PRESS_M"):
+                    print()
+                    print("  AgM ready to take reads.")
+                    print("  Press M to start or 0 to cancel.")
+                    print()
+                    user = input("  [user input]: ").strip().upper()
+                    cmd  = b'M' if user == "M" else b'0'
+                    self.serial.ser.write(cmd)
+                    self.serial.ser.flush()
+                    continue
+
+                # ── Data frame ────────────────────────────────────────
+                r_values = self.parser.parse_inference_frame(line)
+                if r_values:
+                    print(f"  [INFO] R[18] frame received ({len(r_values)} channels)")
+                    break
+
+                # ── Any other line ────────────────────────────────────
+                print(f"  [Arduino] {line}")
+
+        except KeyboardInterrupt:
+            print()
+            print("  [INFO] Measurement interrupted — turning lamp off.")
+            _lamp_off()
             self.state = State.IDLE
             return
-
-        r_values = None
-
-        # Read serial lines — display each, forward user input when prompted
-        while True:
-            line = self.serial.readline()
-            if not line:
-                continue
-
-            # Filter serial echo
-            if line.strip() in ("M", ""):
-                continue
-
-            # ── ACK ──────────────────────────────────────────────────
-            if line.startswith("ACK,M_CONFIRMED"):
-                print(f"  [INFO] {line} — measurement started.")
-                continue
-
-            if line.startswith("ACK"):
-                print(f"  [INFO] {line}")
-                continue
-
-            # ── Error ─────────────────────────────────────────────────
-            if self.parser.detect_error(line):
-                print(f"  [ERROR] Arduino: {line} — calibration missing, aborting.")
-                self.state = State.IDLE
-                return
-
-            # ── CANCELLED ─────────────────────────────────────────────
-            if line.startswith("CANCELLED"):
-                print()
-                print("  [INFO] Measurement cancelled — returning to menu.")
-                self.state = State.IDLE
-                return
-
-            # ── WARN: lamp cold — display then forward user input ─────
-            if self.parser.detect_warning(line):
-                print(f"  [WARN] Arduino: {line} — lamp may be cold.")
-                print()
-                time.sleep(1)
-                print("  Press M to continue measurement or 0 to cancel.")
-                print()
-                user = input("  [user input]: ").strip().upper()
-                cmd  = b'M' if user == "M" else b'0'
-                self.serial.ser.write(cmd)
-                self.serial.ser.flush()
-                if user != "M":
-                    # Wait for CANCELLED from Arduino then exit
-                    continue
-                continue
-
-            # ── READY: lamp warm — display then forward user input ────
-            if line.startswith("READY,PRESS_M"):
-                print()
-                print("  AgM ready to take reads.")
-                print("  Press M to start or 0 to cancel.")
-                print()
-                user = input("  [user input]: ").strip().upper()
-                cmd  = b'M' if user == "M" else b'0'
-                self.serial.ser.write(cmd)
-                self.serial.ser.flush()
-                continue
-
-            # ── Data frame ────────────────────────────────────────────
-            r_values = self.parser.parse_inference_frame(line)
-            if r_values:
-                print(f"  [INFO] R[18] frame received ({len(r_values)} channels)")
-                break
-
-            # ── Any other line — just display it ─────────────────────
-            print(f"  [Arduino] {line}")
+        finally:
+            # Always restore original serial timeout
+            self.serial.ser.timeout = original_timeout
 
         if not r_values:
             print("  [ERROR] No valid inference frame received.")
+            _lamp_off()
             self.state = State.IDLE
             return
 
