@@ -212,26 +212,15 @@ class AgMOrchestrator:
             time.sleep(0.5)
 
     def _sensing_process(self) -> None:
-        """Confirm with user then send M to Arduino and run full inference."""
+        """Send M to Arduino — Arduino controls the confirmation flow."""
         _header("Sensing Process")
 
         sample_name = _auto_sample_name()
         print(f"  Sample ID: {sample_name}")
         print()
-        print("  Press M to start measurement or 0 to return to menu.")
+        print("  Initiating measurement — Arduino will guide the process.")
         print()
-        choice = input("  [user input]: ").strip().upper()
 
-        if choice == "0":
-            return
-
-        if choice != "M":
-            print("  [WARN] Invalid input.")
-            time.sleep(1)
-            return
-
-        print()
-        print("  Sending measurement command to Arduino...")
         self.run_inference(sample_name)
 
     # ── Option 3: Settings ────────────────────────────────────────────
@@ -254,17 +243,23 @@ class AgMOrchestrator:
     def run_inference(self, sample_name: str) -> None:
         """
         Full KNN inference workflow.
-        Ref: AgM_SRS_Inference_V0.5 §3.4
+        Arduino owns the flow — Python displays messages and forwards
+        user input as single-byte serial commands.
 
-        Flow:
-          1. Send cmd M → Arduino responds: ACK,M + [WARN,LAMP_COLD] + $,...,$
-          2. Read all serial lines until $...$ frame is found or timeout
-          3. On WARN: drain remaining buffer first, then show warning + user prompt
-          4. KNN predict → display → save → plot
+        Arduino protocol:
+          Python sends M  ->  Arduino: ACK,M
+          Arduino checks warmup:
+            - Cold lamp: WARN,LAMP_COLD  -> waits for M (proceed) or other (cancel)
+            - Lamp ready: READY,PRESS_M  -> waits for M (proceed) or other (cancel)
+          Python forwards user input to Arduino
+          Arduino: ACK,M_CONFIRMED -> measures -> $,...,$
+                   CANCELLED       -> returns to IDLE
+
+        Ref: AgM_SRS_Inference_V0.5 §3.4
         """
         self.state = State.INFERENCE
 
-        # Send trigger cmd M
+        # Send initial trigger cmd M
         try:
             self.serial.ser.write(b'M')
             self.serial.ser.flush()
@@ -273,63 +268,76 @@ class AgMOrchestrator:
             self.state = State.IDLE
             return
 
-        # ── Phase 1: collect ALL lines Arduino sends (ACK + WARN + $frame$) ──
-        # Arduino sends everything in one burst — read with generous timeout
-        raw_lines = []
-        empties   = 0
-        max_empties = 12  # ~12 s total wait at 1 s timeout
+        r_values = None
 
-        while empties < max_empties:
+        # Read serial lines — display each, forward user input when prompted
+        while True:
             line = self.serial.readline()
             if not line:
-                empties += 1
-                # Stop early if we already have a data frame
-                if any(l.startswith("$,") for l in raw_lines):
-                    break
                 continue
-            empties = 0  # reset on any real data
-            raw_lines.append(line)
-            if line.startswith("$,"):
-                break  # data frame received — stop reading
 
-        # ── Phase 2: process collected lines ──────────────────────────
-        r_values         = None
-        lamp_cold_warned = False
+            # Filter serial echo
+            if line.strip() in ("M", ""):
+                continue
 
-        for line in raw_lines:
-            if line.strip() == "M":
-                continue  # ignore serial echo
+            # ── ACK ──────────────────────────────────────────────────
+            if line.startswith("ACK,M_CONFIRMED"):
+                print(f"  [INFO] {line} — measurement started.")
+                continue
 
             if line.startswith("ACK"):
                 print(f"  [INFO] {line}")
                 continue
 
+            # ── Error ─────────────────────────────────────────────────
             if self.parser.detect_error(line):
                 print(f"  [ERROR] Arduino: {line} — calibration missing, aborting.")
                 self.state = State.IDLE
                 return
 
-            if self.parser.detect_warning(line) and not lamp_cold_warned:
-                lamp_cold_warned = True
-                print(f"  [WARN] Arduino: {line} — lamp may be cold.")
-                continue
-
-            parsed = self.parser.parse_inference_frame(line)
-            if parsed:
-                r_values = parsed
-                print(f"  [INFO] R[18] frame received ({len(r_values)} channels)")
-
-        # ── Phase 3: if WARN was received, show confirmation prompt ───
-        if lamp_cold_warned:
-            print()
-            time.sleep(1)
-            print("  Continue? Press M to proceed or 0 to return to menu.")
-            print()
-            user = input("  [user input]: ").strip().upper()
-            if user == "0":
+            # ── CANCELLED ─────────────────────────────────────────────
+            if line.startswith("CANCELLED"):
+                print()
+                print("  [INFO] Measurement cancelled — returning to menu.")
                 self.state = State.IDLE
                 return
-            # User confirmed — proceed with data already in r_values
+
+            # ── WARN: lamp cold — display then forward user input ─────
+            if self.parser.detect_warning(line):
+                print(f"  [WARN] Arduino: {line} — lamp may be cold.")
+                print()
+                time.sleep(1)
+                print("  Press M to continue measurement or 0 to cancel.")
+                print()
+                user = input("  [user input]: ").strip().upper()
+                cmd  = b'M' if user == "M" else b'0'
+                self.serial.ser.write(cmd)
+                self.serial.ser.flush()
+                if user != "M":
+                    # Wait for CANCELLED from Arduino then exit
+                    continue
+                continue
+
+            # ── READY: lamp warm — display then forward user input ────
+            if line.startswith("READY,PRESS_M"):
+                print()
+                print("  AgM ready to take reads.")
+                print("  Press M to start or 0 to cancel.")
+                print()
+                user = input("  [user input]: ").strip().upper()
+                cmd  = b'M' if user == "M" else b'0'
+                self.serial.ser.write(cmd)
+                self.serial.ser.flush()
+                continue
+
+            # ── Data frame ────────────────────────────────────────────
+            r_values = self.parser.parse_inference_frame(line)
+            if r_values:
+                print(f"  [INFO] R[18] frame received ({len(r_values)} channels)")
+                break
+
+            # ── Any other line — just display it ─────────────────────
+            print(f"  [Arduino] {line}")
 
         if not r_values:
             print("  [ERROR] No valid inference frame received.")
