@@ -156,8 +156,9 @@ class FileManager:
                 lines.append(f"  {label}:  {val:.4f}")
             lines.append("=" * 48)
 
-            ts_file  = self.get_timestamp_formatted()
-            filename = f"AgM_Inference_{ts_file}.txt"
+            ts_file       = self.get_timestamp_formatted()
+            sample_key    = result_dict.get('sample_name', f'AgM_Measurement_{ts_file}')
+            filename      = f"{sample_key}.txt"
             filepath = self.base_path / filename
             with open(filepath, 'w') as f:
                 f.write("\n".join(lines))

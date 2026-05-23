@@ -1,18 +1,25 @@
 """
-agm_orchestrator.py — AgM Main Orchestrator
+agm_orchestrator.py — AgM Terminal Orchestrator
 Entry point for the Agronomist Multimeter Python host application.
-Presents a terminal main menu and orchestrates all AgM modules.
+All device interaction is via serial console.
 
 Menu structure:
-  1. Calibration Procedure  — informs user calibration is pre-loaded
-  2. Measurement Procedure  — triggers Arduino inference via cmd 'M'
-  3. General Settings       — placeholder, deferred
+  Main Menu:
+    1. Calibration Procedure
+    2. Measurement Procedure  ->  Measurement Menu:
+                                    1. Warm-up Lamp (cmd L, 10 min countdown)
+                                    2. Sensing Process (cmd M, full inference)
+                                    3. Return to Main Menu
+    3. General Settings
+    0. Exit
 
-Ref: AgM_SRS_Inference_V0.4.1
+Ref: AgM_SRS_Inference_V0.5 §3.7
 """
 
 import sys
 import time
+import threading
+from datetime import datetime
 from enum import Enum
 from typing import Optional, List
 
@@ -24,35 +31,51 @@ from agm.calibration_manager import CalibrationManager
 from agm.plot_manager import PlotManager
 from agm.knn_inference import knn_predict, confidence_label, load_centroids
 
+DIVIDER = "-" * 31
+WARMUP_SECONDS = 600  # 10 minutes
 
-# ── State machine ─────────────────────────────────────────────────────
+
 class State(Enum):
     IDLE               = "idle"
     SAMPLE_MEASUREMENT = "sample_measurement"
     INFERENCE          = "inference"
 
 
-# ── UI helpers ────────────────────────────────────────────────────────
-DIVIDER = "-" * 31
+# ── Helpers ───────────────────────────────────────────────────────────
 
-def _header():
+def _header(subtitle: str = "Main Menu"):
     print()
     print("Agronomist Multimeter.")
     print(DIVIDER)
+    print(subtitle)
+    print(DIVIDER)
+    print()
 
-def _clear_lines(n=1):
-    pass  # terminal clarity — keep output readable without clearing screen
+def _auto_sample_name() -> str:
+    """Generate sample name: AgM_Measurement_DDMMYY_HHMM"""
+    return datetime.now().strftime("AgM_Measurement_%d%m%y_%H%M")
 
-def _pause(seconds: float = 2.0):
-    time.sleep(seconds)
+def _warmup_countdown(stop_event: threading.Event):
+    """Display a live countdown timer for WARMUP_SECONDS. Runs in a thread."""
+    start = time.time()
+    while not stop_event.is_set():
+        elapsed  = int(time.time() - start)
+        remaining = WARMUP_SECONDS - elapsed
+        if remaining <= 0:
+            print("\r  Warm-up complete!                        ")
+            break
+        mins = remaining // 60
+        secs = remaining % 60
+        print(f"\r  Warm-up time remaining: {mins:02d}:{secs:02d}  ", end="", flush=True)
+        time.sleep(1)
 
 
 # ── Orchestrator ──────────────────────────────────────────────────────
+
 class AgMOrchestrator:
     def __init__(self, port: str = '/dev/tty.usbmodem14701', baud: int = 115200):
-        """Initialize all AgM modules."""
-        self.port = port
-        self.baud = baud
+        self.port  = port
+        self.baud  = baud
 
         self.serial        = SerialPort(port, baud)
         self.parser        = DataParser()
@@ -61,125 +84,179 @@ class AgMOrchestrator:
         self.calib_manager = CalibrationManager(self.file_manager)
         self.plot_manager  = PlotManager()
 
-        self.state         = State.IDLE
-        self.sample_name   = None
+        self.state            = State.IDLE
         self.blocks_received  = 0
         self.blocks_processed = 0
 
     # ── Entry point ───────────────────────────────────────────────────
+
     def run(self) -> None:
-        """Open serial port then show main menu loop."""
         if not self.serial.open():
             sys.exit(1)
-
         try:
             while True:
-                self._main_menu()
+                choice = self._main_menu()
+                if choice == "1":
+                    self._menu_calibration()
+                elif choice == "2":
+                    self._menu_measurement()
+                elif choice == "3":
+                    self._menu_settings()
+                elif choice == "0":
+                    self._exit()
+                    break
+                else:
+                    print("  [WARN] Invalid option.")
+                    time.sleep(1)
         except KeyboardInterrupt:
-            print("\n[INFO] Interrupted by user")
+            print("\n  [INFO] Interrupted by user.")
         finally:
             self._cleanup()
 
     # ── Main menu ─────────────────────────────────────────────────────
-    def _main_menu(self) -> None:
-        _header()
-        print("Main Menu")
-        print(DIVIDER)
-        print()
+
+    def _main_menu(self) -> str:
+        _header("Main Menu")
         print("  1. Calibration Procedure")
         print("  2. Measurement Procedure")
         print("  3. General Settings")
+        print("  0. Exit")
         print()
-        choice = input("Option: ").strip()
-
-        if choice == "1":
-            self._menu_calibration()
-        elif choice == "2":
-            self._menu_measurement()
-        elif choice == "3":
-            self._menu_settings()
-        else:
-            print("[WARN] Invalid option — please enter 1, 2 or 3.")
-            _pause(1.0)
+        return input("Option: ").strip()
 
     # ── Option 1: Calibration ─────────────────────────────────────────
+
     def _menu_calibration(self) -> None:
-        _header()
-        print("Calibration Procedure")
-        print(DIVIDER)
-        print()
+        _header("Calibration Procedure")
         print("  The calibration process is already done.")
         print("  Measures are stored in device.")
         print()
-        _pause(2.0)
-        # returns to main menu automatically
+        time.sleep(2)
 
-    # ── Option 2: Measurement ─────────────────────────────────────────
+    # ── Option 2: Measurement — submenu ──────────────────────────────
+
     def _menu_measurement(self) -> None:
-        _header()
-        print("Measurement Procedure")
-        print(DIVIDER)
-        print()
-        print("  Press M to start or 0 to return to main menu.")
-        print()
-        choice = input("  Start: ").strip().upper()
+        while True:
+            _header("Measurement Menu")
+            print("  1. Warm-up Lamp")
+            print("  2. Sensing Process")
+            print("  3. Return to Main Menu")
+            print()
+            choice = input("Option: ").strip()
 
-        if choice == "0":
+            if choice == "1":
+                self._warmup_lamp()
+            elif choice == "2":
+                self._sensing_process()
+            elif choice == "3":
+                return
+            else:
+                print("  [WARN] Invalid option.")
+                time.sleep(1)
+
+    def _warmup_lamp(self) -> None:
+        """Send L to Arduino, show 10-min countdown, then thermal stabilisation notice."""
+        _header("Warm-up Lamp")
+        print("  Sending lamp ON command to Arduino...")
+
+        try:
+            self.serial.ser.write(b'L')
+        except Exception as e:
+            print(f"  [ERROR] Failed to send cmd L: {e}")
+            time.sleep(2)
             return
 
-        if choice == "M":
-            self._prompt_sample_name()
-            if self.sample_name:
-                self.run_inference()
+        # Wait for ACK 'L' from Arduino
+        ack_received = False
+        for _ in range(20):
+            line = self.serial.readline()
+            if line and line.strip() == "L":
+                ack_received = True
+                break
+
+        if not ack_received:
+            print("  [WARN] No ACK from Arduino — lamp may still be on.")
         else:
-            print("[WARN] Invalid input — press M to start or 0 to return.")
-            _pause(1.0)
+            print("  [INFO] Lamp ON confirmed by Arduino.")
+
+        print()
+        print("  10-minute warm-up countdown started.")
+        print("  Press Ctrl+C to return to menu before countdown ends.")
+        print()
+
+        stop_event = threading.Event()
+        timer_thread = threading.Thread(target=_warmup_countdown, args=(stop_event,), daemon=True)
+        timer_thread.start()
+
+        try:
+            timer_thread.join(timeout=WARMUP_SECONDS + 2)
+        except KeyboardInterrupt:
+            stop_event.set()
+            print("\n  [INFO] Warm-up interrupted — returning to menu.")
+            time.sleep(1)
+            return
+
+        stop_event.set()
+        print()
+        print("  ┌─────────────────────────────────────────┐")
+        print("  │  Lamp warm-up complete.                 │")
+        print("  │  Time for thermal stabilisation.        │")
+        print("  │  Press Ctrl+C to return to menu.        │")
+        print("  └─────────────────────────────────────────┘")
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n  [INFO] Returning to Measurement Menu.")
+            time.sleep(0.5)
+
+    def _sensing_process(self) -> None:
+        """Send M to Arduino, collect R[18], run KNN, save results."""
+        _header("Sensing Process")
+
+        sample_name = _auto_sample_name()
+        print(f"  Sample ID: {sample_name}")
+        print()
+        print("  Sending measurement command to Arduino...")
+
+        self.run_inference(sample_name)
 
     # ── Option 3: Settings ────────────────────────────────────────────
+
     def _menu_settings(self) -> None:
-        _header()
-        print("General Settings")
-        print(DIVIDER)
-        print()
+        _header("General Settings")
         print("  Implementation to be done.")
         print()
-        _pause(1.0)
-        # returns to main menu automatically
+        time.sleep(1)
 
-    # ── Sample name prompt ────────────────────────────────────────────
-    def _prompt_sample_name(self) -> None:
-        try:
-            name = input("  Enter sample name: ").strip()
-            if name:
-                self.sample_name = name
-            else:
-                print("[ERROR] Sample name cannot be empty.")
-                self.sample_name = None
-        except Exception as e:
-            print(f"[ERROR] Failed to read sample name: {e}")
-            self.sample_name = None
+    # ── Option 0: Exit ────────────────────────────────────────────────
+
+    def _exit(self) -> None:
+        print()
+        print("  Closing serial connection and exiting...")
+        time.sleep(0.5)
 
     # ── Inference workflow (PY-02 to PY-09) ──────────────────────────
-    def run_inference(self) -> None:
+
+    def run_inference(self, sample_name: str) -> None:
         """
         Full KNN inference workflow.
-        Ref: AgM_SRS_Inference_V0.4.1 §3.4
+        Ref: AgM_SRS_Inference_V0.5 §3.4
         """
-        print()
-        print("[INFERENCE] Starting measurement process...")
         self.state = State.INFERENCE
 
-        # Step 1: send trigger command M (PY-02)
+        # Send trigger cmd M
         try:
             self.serial.ser.write(b'M')
         except Exception as e:
-            print(f"[ERROR] Failed to send cmd M: {e}")
+            print(f"  [ERROR] Failed to send cmd M: {e}")
             self.state = State.IDLE
             return
 
-        # Step 2: wait for ACK, ERR, WARN or $...$ frame
+        # Collect response
         r_values      = None
-        timeout_reads = 50
+        timeout_reads = 80
 
         for _ in range(timeout_reads):
             line = self.serial.readline()
@@ -187,138 +264,84 @@ class AgMOrchestrator:
                 continue
 
             if line.startswith("ACK"):
-                print(f"[INFERENCE] {line}")
+                print(f"  [INFO] {line}")
                 continue
 
-            # PY-04: ERR — abort
             if self.parser.detect_error(line):
-                print(f"[ERROR] Arduino: {line} — calibration missing, aborting.")
+                print(f"  [ERROR] Arduino: {line} — calibration missing, aborting.")
                 self.state = State.IDLE
                 return
 
-            # PY-05: WARN — non-blocking, continue
             if self.parser.detect_warning(line):
-                print(f"[WARN] Arduino: {line} — lamp may be cold, continuing.")
+                print(f"  [WARN] Arduino: {line} — lamp may be cold, continuing.")
                 continue
 
-            # Step 3: parse data frame (PY-03)
             r_values = self.parser.parse_inference_frame(line)
             if r_values:
-                print(f"[INFERENCE] R[18] frame received ({len(r_values)} channels)")
+                print(f"  [INFO] R[18] frame received ({len(r_values)} channels)")
                 break
 
         if not r_values:
-            print("[ERROR] No valid inference frame received.")
+            print("  [ERROR] No valid inference frame received.")
             self.state = State.IDLE
             return
 
-        # Step 4: KNN prediction (PY-06)
+        # KNN prediction
         prediction             = knn_predict(r_values)
         confidence             = confidence_label(prediction["distance"])
         prediction["confidence"] = confidence
         prediction["r_values"]   = r_values
+        prediction["sample_name"] = sample_name
 
         print()
-        print("=" * 48)
-        print("INFERENCE RESULT")
-        print("=" * 48)
-        print(f"  Matched sample : {prediction['sample']}")
+        print("  " + "=" * 46)
+        print("  INFERENCE RESULT")
+        print("  " + "=" * 46)
+        print(f"  Sample ID      : {sample_name}")
+        print(f"  Matched        : {prediction['sample']}")
         print(f"  Distance       : {prediction['distance']:.4f}")
         print(f"  Confidence     : {confidence}")
-        print("-" * 48)
+        print("  " + "-" * 46)
         print(f"  N (Nitrogen)   : {prediction['N']:<8} ({prediction['N_mg_kg']:.2f} mg/kg)")
         print(f"  P (Phosphorus) : {prediction['P']:<8} ({prediction['P_mg_kg']:.2f} mg/kg)")
         print(f"  K (Potassium)  : {prediction['K']:<8} ({prediction['K_mg_kg']:.2f} mg/kg)")
-        print("=" * 48)
+        print("  " + "=" * 46)
 
-        # Step 5: save result file (PY-07 / PY-08)
+        # Save result file using auto-generated sample name
         result_path = self.file_manager.save_inference_result(prediction)
         if result_path:
-            print(f"[INFERENCE] Result saved: {result_path}")
+            print(f"  [INFO] Result saved: {result_path}")
 
-        # Step 6: optional spectrum overlay plot (PY-09)
+        # Plot overlay
         centroids = load_centroids()
         centroid  = centroids.get(prediction["sample"], [])
         if centroid:
             self.plot_manager.plot_inference(r_values, centroid, prediction["sample"])
             plot_path = str(
                 self.file_manager.base_path /
-                f"AgM_Inference_{prediction['sample']}_{self.file_manager.get_timestamp_formatted()}.png"
+                f"{sample_name}_Plot_{self.file_manager.get_timestamp_formatted()}.png"
             )
             self.plot_manager.save_figure(plot_path)
             self.plot_manager.close()
-            print(f"[INFERENCE] Plot saved: {plot_path}")
+            print(f"  [INFO] Plot saved: {plot_path}")
 
         self.state = State.IDLE
-        print("[INFERENCE] Complete — returning to main menu.")
-        _pause(2.0)
-
-    # ── Legacy measurement cycle (kept for compatibility) ─────────────
-    def _run_measurement_cycle(self, start_line: str) -> None:
-        self.measurement.clear_buffer()
-        read_count = 0
-
-        values = self.parser.extract_reading_block(start_line)
-        if values:
-            self._process_reading(values)
-            read_count += 1
-
-        while read_count < 5:
-            line = self.serial.readline()
-            if not line:
-                continue
-            if self.parser.is_end_marker(line):
-                break
-            values = self.parser.extract_reading_block(line)
-            if values:
-                self._process_reading(values)
-                read_count += 1
-
-        if read_count > 0:
-            avg_values = self.measurement.compute_average()
-            self._finalize_measurement(avg_values)
-        else:
-            print("[ERROR] No valid readings captured")
-
-        self.state = State.IDLE
-
-    def _process_reading(self, values: List[str]) -> None:
-        try:
-            validated = self.parser.validate(values)
-            if validated and len(validated) == 18:
-                self.blocks_received += 1
-                self.measurement.add_reading(validated)
-                self.blocks_processed += 1
-            else:
-                print(f"[WARN] Invalid reading: got {len(validated)} values, expected 18")
-        except Exception as e:
-            print(f"[ERROR] Failed to process reading: {e}")
-
-    def _finalize_measurement(self, avg_values: List[float]) -> None:
-        if not avg_values:
-            print("[ERROR] No valid measurements")
-            return
-        calib_path   = self.calib_manager.save_calibration(self.sample_name, avg_values)
-        self.plot_manager.plot_spectrum(avg_values, f"AS7265x Sample: {self.sample_name}")
-        self.plot_manager.update_y_axis(avg_values)
-        plot_filepath = (
-            self.file_manager.base_path /
-            f"AgM_{self.sample_name}_Plot_{self.file_manager.get_timestamp_formatted()}.png"
-        )
-        self.plot_manager.save_figure(str(plot_filepath))
-        self.plot_manager.close()
-        print(f"[INFO] Text file: {calib_path}")
-        print(f"[INFO] Plot file: {plot_filepath}")
+        print()
+        print("  [INFO] Measurement complete — returning to menu.")
+        time.sleep(2)
 
     # ── Cleanup ───────────────────────────────────────────────────────
+
     def _cleanup(self) -> None:
         self.serial.close()
-        print("\n" + "=" * 60)
+        print()
+        print("=" * 40)
         print("SESSION STATISTICS")
-        print("=" * 60)
+        print("=" * 40)
         print(f"Blocks Received:  {self.blocks_received}")
         print(f"Blocks Processed: {self.blocks_processed}")
-        print("=" * 60)
+        print("=" * 40)
+        print("Goodbye.")
 
 
 if __name__ == "__main__":
