@@ -10,17 +10,24 @@ from typing import List, Optional
 
 class FileManager:
     def __init__(self, base_path: Optional[str] = None):
-        """Initialize file manager with base directory."""
+        """
+        Initialize file manager.
+        Each day's readings go in ~/AgM_Reads_DDMMYY/ subdirectory.
+        Directory is created automatically if it does not exist.
+        """
         if base_path is None:
-            base_path = "/Users/jorgecortes/Documents/maestriaSistemasEmbebidosInfotec/multimetroAgronomo/ClaudeProject/AgM_Readings_2026/AgM_CalibrationReads"
-        self.base_path = Path(base_path)
+            base_path = str(Path.home() / "AgM_Reads")
+        self._root = Path(base_path)
+        # Daily subdirectory: AgM_Reads_DDMMYY
+        today = datetime.now().strftime("%d%m%y")
+        self.base_path = self._root / f"AgM_Reads_{today}"
         self.ensure_dir()
-    
+
     def ensure_dir(self) -> bool:
-        """Create directory if it doesn't exist."""
+        """Create daily directory if it does not exist."""
         try:
             self.base_path.mkdir(parents=True, exist_ok=True)
-            print(f"[INFO] Ensured directory: {self.base_path}")
+            print(f"[INFO] Output directory: {self.base_path}")
             return True
         except Exception as e:
             print(f"[ERROR] Failed to create directory: {e}")

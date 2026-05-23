@@ -23,40 +23,50 @@ class DataParser:
     
     def extract_reading_block(self, line: str) -> Optional[List[str]]:
         """
-        Extract numeric values from a line containing $,value1,value2,...,value18,$.
+        Extract numeric values from $,v1,...,v18,$ frame.
+        Handles float values (e.g. 5.6721, 0.0000) and trailing comma before $.
         Returns list of 18 numeric strings, or None if invalid.
         """
-        # Look for pattern: $,numbers,$
-        if '$,' not in line or ',$' not in line:
+        if '$,' not in line:
             return None
-        
-        # Extract content between $, and ,$
+
+        # Find opening $, and closing $ (last occurrence)
         start_idx = line.find('$,')
-        end_idx = line.find(',$', start_idx)
-        
-        if start_idx == -1 or end_idx == -1:
+        end_idx   = line.rfind('$')   # last $ in line
+
+        if start_idx == -1 or end_idx <= start_idx:
             return None
-        
-        # Extract the numeric part
-        content = line[start_idx + 2:end_idx]
-        
-        # Split by comma and extract numbers
-        values = [v.strip() for v in content.split(',')]
-        values = [v for v in values if v.isdigit()]
-        
-        # Must have exactly 18 values
+
+        # Content between the two $ markers, strip the leading comma
+        content = line[start_idx + 2 : end_idx]
+
+        # Split and keep only parseable numbers (int or float)
+        values = []
+        for v in content.split(','):
+            v = v.strip()
+            if not v:
+                continue
+            try:
+                float(v)   # validate it is a number
+                values.append(v)
+            except ValueError:
+                continue
+
         if len(values) != 18:
             return None
-        
+
         return values
-    
+
     def validate(self, vals: List[str]) -> List[float]:
-        """Convert strings to floats, return only positive finite values."""
+        """
+        Convert strings to floats. Allows zero values (valid when lamp is off
+        or channel reads nothing). Rejects non-finite values only.
+        """
         result = []
         for v in vals:
             try:
                 f = float(v)
-                if f > 0 and abs(f) != float('inf'):
+                if abs(f) != float('inf') and f == f:  # finite, not NaN
                     result.append(f)
             except (ValueError, TypeError):
                 continue
