@@ -385,7 +385,6 @@ class AgMOrchestrator:
         print("  " + "=" * 46)
         print(f"  Sample ID      : {sample_name}")
         print(f"  Matched        : {prediction['sample']}")
-        print(f"  Distance       : {prediction['distance']:.4f}")
         print(f"  Confidence     : {confidence}")
         print("  " + "-" * 46)
         print(f"  N (Nitrogen)   : {prediction['N']:<8} ({prediction['N_mg_kg']:.2f} mg/kg)")
