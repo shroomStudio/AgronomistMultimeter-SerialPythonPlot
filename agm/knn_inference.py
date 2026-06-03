@@ -50,20 +50,20 @@ def load_centroids() -> Dict[str, List[float]]:
 
 def load_fira_labels() -> Dict[str, Dict]:
     """
-    FIRA-Banco de México NPK saturation levels and reference concentrations.
+    FIRA NPK saturation levels and reference concentrations.
     Source: FIRA laboratory analysis — AgM_MasterDataset_25-04-26.xlsx.
     """
     return {
-        "MS-788": {"N": "MEDIUM", "P": "LOW",  "K": "MEDIUM",
-                   "N_mg_kg": 25.30, "P_mg_kg":  8.45, "K_mg_kg": 185.50},
-        "MS-789": {"N": "HIGH",   "P": "LOW",  "K": "LOW",
-                   "N_mg_kg": 42.10, "P_mg_kg":  9.20, "K_mg_kg": 120.30},
-        "MS-900": {"N": "HIGH",   "P": "HIGH", "K": "LOW",
+        "MS-788": {"N": "MEDIUM", "P": "LOW",  "K": "HIGH",
+                   "N_mg_kg": 31.50, "P_mg_kg":  4.97, "K_mg_kg": 398.56},
+        "MS-789": {"N": "HIGH",   "P": "LOW",  "K": "MEDIUM",
+                   "N_mg_kg": 38.50, "P_mg_kg":  4.20, "K_mg_kg": 243.61},
+        "MS-900": {"N": "HIGH",   "P": "HIGH", "K": "HIGH",
                    "N_mg_kg": 38.50, "P_mg_kg": 32.55, "K_mg_kg": 298.08},
         "MS-983": {"N": "LOW",    "P": "LOW",  "K": "LOW",
-                   "N_mg_kg": 12.80, "P_mg_kg":  6.30, "K_mg_kg":  98.40},
-        "MS-986": {"N": "HIGH",   "P": "HIGH", "K": "HIGH",
-                   "N_mg_kg": 45.20, "P_mg_kg": 38.90, "K_mg_kg": 520.70},
+                   "N_mg_kg": 21.00, "P_mg_kg":  3.85, "K_mg_kg":  162.61},
+        "MS-986": {"N": "MEDIUM",   "P": "HIGH", "K": "HIGH",
+                   "N_mg_kg": 35.00, "P_mg_kg": 30.53, "K_mg_kg": 618.12},
     }
 
 
